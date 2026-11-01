@@ -8,6 +8,7 @@ import { z } from 'zod';
 const router = Router({ mergeParams: true });
 
 // Public
+router.get('/landing-overview', catalogController.getLandingOverview);
 router.get('/categories', catalogController.getCategories);
 router.get('/shops/:shopId/products', validate({ query: listProductsSchema }), catalogController.listProducts);
 

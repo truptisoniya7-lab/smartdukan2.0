@@ -144,14 +144,14 @@ export const shopRepository = {
       }>
     >`
       SELECT
-        id, name, latitude, longitude, rating, is_open, logo_url,
+        id, name, latitude, longitude, rating, "isOpen" AS is_open, "logoUrl" AS logo_url,
         (6371 * acos(
           cos(radians(${lat})) * cos(radians(latitude)) *
           cos(radians(longitude) - radians(${lng})) +
           sin(radians(${lat})) * sin(radians(latitude))
         )) AS distance_km
       FROM shops
-      WHERE is_active = true
+      WHERE "isActive" = true
         AND (6371 * acos(
           cos(radians(${lat})) * cos(radians(latitude)) *
           cos(radians(longitude) - radians(${lng})) +

@@ -34,4 +34,9 @@ export const catalogService = {
     await catalogService.getProduct(productId, shop.id); // ownership check
     return catalogRepository.deactivateProduct(productId);
   },
+
+  async getLandingOverview() {
+    return catalogRepository.getLandingOverview();
+  },
 };
+
