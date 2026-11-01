@@ -1,0 +1,497 @@
+// ─────────────────────────────────────────────────────────────
+// Smart Dukan 2.0 — Prisma Schema
+// PostgreSQL 16 + TimescaleDB + PostGIS
+// ─────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────
+
+enum Role {
+  CUSTOMER
+  SHOPKEEPER
+  RIDER
+  ADMIN
+}
+
+enum OrderStatus {
+  DRAFT
+  PLACED
+  CONFIRMED
+  PACKED
+  RIDER_ASSIGNED
+  PICKED_UP
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  FAILED
+  RETURNED
+}
+
+enum DeliveryStatus {
+  PENDING
+  ASSIGNED
+  PICKED_UP
+  OUT_FOR_DELIVERY
+  DELIVERED
+  FAILED
+}
+
+enum PaymentMode {
+  COD
+  UPI
+  CARD
+  WALLET
+}
+
+enum PaymentStatus {
+  PENDING
+  CAPTURED
+  FAILED
+  REFUNDED
+}
+
+enum ReservationStatus {
+  HELD
+  COMMITTED
+  RELEASED
+}
+
+enum SuggestionStatus {
+  PENDING
+  ACCEPTED
+  DISMISSED
+}
+
+enum AlertType {
+  LOW_STOCK
+  EXPIRY_RISK
+  DEAD_STOCK
+  DEMAND_SPIKE
+}
+
+// ─────────────────────────────────────────────────────────────
+// Users & Identity
+// ─────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  phone        String   @unique
+  email        String?  @unique
+  passwordHash String?
+  name         String
+  role         Role     @default(CUSTOMER)
+  isVerified   Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  shop         Shop?
+  riderProfile RiderProfile?
+  orders       Order[]       @relation("CustomerOrders")
+  addresses    Address[]
+  otpTokens    OtpToken[]
+  refreshTokens RefreshToken[]
+  auditLogs    AuditLog[]
+
+  @@index([phone])
+  @@index([email])
+  @@map("users")
+}
+
+model OtpToken {
+  id        String   @id @default(uuid())
+  userId    String?
+  phone     String
+  otpHash   String
+  purpose   String   // LOGIN | REGISTER | DELIVERY_VERIFY
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([phone, purpose, used])
+  @@index([expiresAt])
+  @@map("otp_tokens")
+}
+
+model RefreshToken {
+  id          String   @id @default(uuid())
+  userId      String
+  tokenHash   String   @unique // SHA-256 of the opaque token
+  family      String            // for reuse detection — all tokens in a chain share a family id
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  isRevoked   Boolean  @default(false)
+  userAgent   String?
+  ipAddress   String?
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@index([userId, family])
+  @@map("refresh_tokens")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Shops
+// ─────────────────────────────────────────────────────────────
+
+model Shop {
+  id               String   @id @default(uuid())
+  ownerId          String   @unique
+  name             String
+  description      String?
+  address          String
+  city             String
+  pincode          String
+  latitude         Float
+  longitude        Float
+  deliveryRadiusKm Float    @default(5)
+  phone            String
+  openingTime      String   @default("09:00") // HH:mm
+  closingTime      String   @default("21:00")
+  isOpen           Boolean  @default(true)
+  isActive         Boolean  @default(true)
+  logoUrl          String?
+  bannerUrl        String?
+  rating           Float    @default(5.0)
+  totalOrders      Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  owner             User                @relation(fields: [ownerId], references: [id])
+  categories        ShopCategory[]
+  products          Product[]
+  inventory         InventoryItem[]
+  orders            Order[]
+  reorderSuggestions ReorderSuggestion[]
+  alerts            ShopAlert[]
+
+  @@index([latitude, longitude])
+  @@index([city, isActive])
+  @@map("shops")
+}
+
+model ShopCategory {
+  shopId     String
+  categoryId String
+  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  category   Category @relation(fields: [categoryId], references: [id])
+
+  @@id([shopId, categoryId])
+  @@map("shop_categories")
+}
+
+model Category {
+  id        String     @id @default(uuid())
+  name      String     @unique
+  slug      String     @unique
+  iconUrl   String?
+  parentId  String?
+  isActive  Boolean    @default(true)
+  parent    Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryHierarchy")
+  products  Product[]
+  shops     ShopCategory[]
+
+  @@map("categories")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Products & Inventory
+// ─────────────────────────────────────────────────────────────
+
+model Product {
+  id          String   @id @default(uuid())
+  shopId      String
+  categoryId  String
+  sku         String
+  name        String
+  description String?
+  mrp         Decimal  @db.Decimal(10, 2)
+  sellPrice   Decimal  @db.Decimal(10, 2)
+  unit        String
+  hsn         String?  // GST HSN code
+  imageUrl    String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  shop        Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  category    Category      @relation(fields: [categoryId], references: [id])
+  inventory   InventoryItem?
+  orderItems  OrderItem[]
+  forecasts   DemandForecast[]
+  suggestions ReorderSuggestion[]
+
+  @@unique([shopId, sku])
+  @@index([shopId, categoryId, isActive])
+  @@map("products")
+}
+
+model InventoryItem {
+  id           String   @id @default(uuid())
+  productId    String   @unique
+  shopId       String
+  availableQty Int      @default(0)
+  reservedQty  Int      @default(0)
+  reorderPoint Int      @default(0)
+  safetyStock  Int      @default(0)
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  product      Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  shop         Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  batches      StockBatch[]
+  reservations StockReservation[]
+
+  @@index([shopId, availableQty])
+  @@index([shopId, reorderPoint])
+  @@map("inventory_items")
+}
+
+model StockBatch {
+  id          String    @id @default(uuid())
+  inventoryId String
+  qty         Int
+  costPrice   Decimal   @db.Decimal(10, 2)
+  expiryDate  DateTime?
+  receivedAt  DateTime  @default(now())
+  inventory   InventoryItem @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+
+  @@index([inventoryId])
+  @@index([expiryDate])
+  @@map("stock_batches")
+}
+
+model StockReservation {
+  id          String            @id @default(uuid())
+  orderId     String
+  inventoryId String
+  productId   String
+  qty         Int
+  expiresAt   DateTime
+  status      ReservationStatus @default(HELD)
+  createdAt   DateTime          @default(now())
+  inventory   InventoryItem     @relation(fields: [inventoryId], references: [id])
+
+  @@index([expiresAt, status])
+  @@index([orderId])
+  @@map("stock_reservations")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Orders
+// ─────────────────────────────────────────────────────────────
+
+model Address {
+  id        String   @id @default(uuid())
+  userId    String
+  line1     String
+  line2     String?
+  landmark  String?
+  city      String
+  pincode   String
+  latitude  Float
+  longitude Float
+  label     String   @default("HOME")
+  isDefault Boolean  @default(false)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders    Order[]
+
+  @@index([userId])
+  @@map("addresses")
+}
+
+model Order {
+  id             String      @id @default(uuid())
+  code           String      @unique // human-readable e.g. SD-2026-00042
+  customerId     String
+  shopId         String
+  addressId      String
+  status         OrderStatus @default(DRAFT)
+  subtotal       Decimal     @db.Decimal(10, 2)
+  deliveryFee    Decimal     @db.Decimal(10, 2) @default(0)
+  discount       Decimal     @db.Decimal(10, 2) @default(0)
+  total          Decimal     @db.Decimal(10, 2)
+  paymentMode    PaymentMode
+  paymentStatus  PaymentStatus @default(PENDING)
+  paymentRef     String?     // gateway transaction id
+  idempotencyKey String?     @unique
+  instructions   String?
+  placedAt       DateTime?
+  confirmedAt    DateTime?
+  deliveredAt    DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  // Relations
+  customer  User        @relation("CustomerOrders", fields: [customerId], references: [id])
+  shop      Shop        @relation(fields: [shopId], references: [id])
+  address   Address     @relation(fields: [addressId], references: [id])
+  items     OrderItem[]
+  events    OrderEvent[]
+  delivery  Delivery?
+
+  @@index([shopId, status, placedAt])
+  @@index([customerId, placedAt])
+  @@index([code])
+  @@map("orders")
+}
+
+model OrderItem {
+  id                  String   @id @default(uuid())
+  orderId             String
+  productId           String
+  qty                 Int
+  unitPrice           Decimal  @db.Decimal(10, 2) // price at time of order
+  lineTotal           Decimal  @db.Decimal(10, 2)
+  substituteProductId String?  // if substituted
+  order               Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product             Product  @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model OrderEvent {
+  id        String   @id @default(uuid())
+  orderId   String
+  fromState String?
+  toState   String
+  actorId   String?  // userId who triggered the transition
+  actorRole String?
+  meta      Json?
+  createdAt DateTime @default(now())
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_events")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Delivery
+// ─────────────────────────────────────────────────────────────
+
+model RiderProfile {
+  id           String  @id @default(uuid())
+  userId       String  @unique
+  vehicleType  String  @default("two-wheeler")
+  vehicleNo    String?
+  isAvailable  Boolean @default(false)
+  rating       Float   @default(5.0)
+  activeLoad   Int     @default(0)
+  totalDeliveries Int  @default(0)
+  acceptanceRate Float @default(1.0)
+  locality     String? // area/locality served
+  city         String?
+  isVerified   Boolean @default(false)
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries   Delivery[]
+
+  @@map("rider_profiles")
+}
+
+model Delivery {
+  id            String         @id @default(uuid())
+  orderId       String         @unique
+  riderId       String?
+  status        DeliveryStatus @default(PENDING)
+  otpHash       String?        // bcrypt hash of 4-digit OTP
+  assignedAt    DateTime?
+  pickedUpAt    DateTime?
+  deliveredAt   DateTime?
+  estimatedAt   DateTime?      // ETA
+  routeSnapshot Json?          // final route geometry
+  distanceKm    Float?
+  order         Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  rider         RiderProfile?  @relation(fields: [riderId], references: [id])
+
+  @@map("deliveries")
+}
+
+// ─────────────────────────────────────────────────────────────
+// AI / Forecasting
+// ─────────────────────────────────────────────────────────────
+
+model DemandForecast {
+  id           String   @id @default(uuid())
+  shopId       String
+  productId    String
+  horizonDays  Int      // 7 | 14 | 30
+  predictedQty Float
+  lowerBound   Float
+  upperBound   Float
+  modelVersion String
+  generatedAt  DateTime @default(now())
+  product      Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, productId, generatedAt])
+  @@map("demand_forecasts")
+}
+
+model ReorderSuggestion {
+  id           String           @id @default(uuid())
+  shopId       String
+  productId    String
+  suggestedQty Int
+  reason       String
+  confidence   Float
+  status       SuggestionStatus @default(PENDING)
+  reviewedAt   DateTime?
+  createdAt    DateTime         @default(now())
+  shop         Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  product      Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, status, createdAt])
+  @@map("reorder_suggestions")
+}
+
+model ShopAlert {
+  id        String    @id @default(uuid())
+  shopId    String
+  type      AlertType
+  productId String?
+  message   String
+  meta      Json?
+  isRead    Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  shop      Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, isRead, createdAt])
+  @@map("shop_alerts")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Audit
+// ─────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  actorId   String?
+  action    String   // e.g. AUTH_LOGIN, ORDER_STATUS_CHANGED
+  resource  String?  // entity type
+  resourceId String?
+  meta      Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  actor     User?    @relation(fields: [actorId], references: [id])
+
+  @@index([actorId, createdAt])
+  @@index([resource, resourceId])
+  @@map("audit_logs")
+}
